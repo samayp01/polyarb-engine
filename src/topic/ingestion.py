@@ -12,8 +12,8 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from client import PolymarketClient
-from models import MarketSnapshot, MarketResolution, Outcome
+from .client import PolymarketClient
+from .models import MarketSnapshot, MarketResolution, Outcome
 
 logger = logging.getLogger(__name__)
 

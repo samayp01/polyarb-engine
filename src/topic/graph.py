@@ -13,8 +13,8 @@ import logging
 from datetime import datetime, timezone
 from pathlib import Path
 
-from models import EventEdge
-from utils.embeddings import cluster_markets
+from .models import EventEdge
+from .utils.embeddings import cluster_markets
 
 logger = logging.getLogger(__name__)
 

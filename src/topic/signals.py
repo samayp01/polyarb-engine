@@ -16,10 +16,10 @@ import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from client import PolymarketClient
-from models import Signal, Outcome
-from graph import EventGraph
-from ingestion import ResolutionTracker
+from .client import PolymarketClient
+from .models import Signal, Outcome
+from .graph import EventGraph
+from .ingestion import ResolutionTracker
 
 logger = logging.getLogger(__name__)
 

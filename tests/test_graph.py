@@ -46,8 +46,9 @@ def sample_edges():
   return edges
 
 
-def test_graph_add_edges(sample_edges):
+def test_graph_add_edges(sample_edges, tmp_path, monkeypatch):
   """Test adding edges to graph."""
+  monkeypatch.setattr("src.topic.graph.GRAPH_FILE", tmp_path / "test.json")
   graph = EventGraph()
   graph.add_edges(sample_edges)
 
@@ -75,7 +76,7 @@ def test_graph_get_incoming(sample_edges):
   assert incoming[0].to_market_id == "m2"
 
 
-def test_graph_get_valid(sample_edges):
+def test_graph_get_valid(sample_edges, tmp_path, monkeypatch):
   """Test filtering valid edges."""
   graph = EventGraph()
   graph.add_edges(sample_edges)
@@ -88,7 +89,7 @@ def test_graph_get_valid(sample_edges):
   assert len(valid_strict) == 0
 
 
-def test_graph_clear(sample_edges):
+def test_graph_clear(sample_edges, tmp_path, monkeypatch):
   """Test clearing graph."""
   graph = EventGraph()
   graph.add_edges(sample_edges)
@@ -98,7 +99,7 @@ def test_graph_clear(sample_edges):
   assert len(graph.get_all()) == 0
 
 
-def test_graph_stats(sample_edges):
+def test_graph_stats(sample_edges, tmp_path, monkeypatch):
   """Test graph statistics."""
   graph = EventGraph()
   graph.add_edges(sample_edges)
@@ -143,7 +144,7 @@ def test_graph_persistence(sample_edges, tmp_path):
     graph_module.GRAPH_FILE = original_file
 
 
-def test_graph_no_duplicate_edges():
+def test_graph_no_duplicate_edges(tmp_path, monkeypatch):
   """Test that duplicate edges are handled."""
   graph = EventGraph()
 

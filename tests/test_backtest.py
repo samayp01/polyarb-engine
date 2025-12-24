@@ -14,11 +14,11 @@ def outcomes_file(tmp_path):
   """Create temporary outcomes file."""
   outcomes_path = tmp_path / "market_outcomes.json"
   outcomes_data = {
-    "market1": "YES",
-    "market2": "NO",
-    "market3": "YES",
-    "market4": "NO",
-    "market5": "YES",
+    "market1": True,
+    "market2": False,
+    "market3": True,
+    "market4": False,
+    "market5": True,
   }
   with open(outcomes_path, "w") as f:
     json.dump(outcomes_data, f)

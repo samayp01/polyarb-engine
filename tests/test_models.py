@@ -15,9 +15,9 @@ from src.topic.models import (
 
 def test_outcome_enum():
   """Test Outcome enum values."""
-  assert Outcome.YES.value == "YES"
-  assert Outcome.NO.value == "NO"
-  assert Outcome("YES") == Outcome.YES
+  assert Outcome.YES.value == True
+  assert Outcome.NO.value == False
+  assert Outcome(True) == Outcome.YES
 
 
 def test_conditional_delta_creation():

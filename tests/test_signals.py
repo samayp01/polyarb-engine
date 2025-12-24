@@ -99,7 +99,7 @@ def test_signal_engine_generate_signal_threshold(mock_edge, mock_resolution):
 
   assert signal is not None
   assert signal.direction == "BUY"
-  assert signal.expected_move == 0.15
+  assert abs(signal.expected_move - 0.15) < 0.001
 
 
 def test_signal_engine_below_threshold():

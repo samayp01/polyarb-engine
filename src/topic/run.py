@@ -1,202 +1,225 @@
 #!/usr/bin/env python3
 """
-Polymarket Trading System
+Polymarket Signal System
 
-Detects mispricing opportunities in prediction markets by analyzing
-relationships between semantically similar markets.
+A pipeline for ingesting Polymarket data, building similarity graphs,
+and monitoring for trading signals.
 
 Commands:
-  build    - Build event graph from current markets
-  monitor  - Monitor for signals in real-time
-  backtest - Run backtest on historical data
-  ingest   - Start continuous data ingestion
-  status   - Show system status
+  build     - Build similarity graph from resolved markets
+  backtest  - Test strategy on historical data
+  ingest    - Poll for new market resolutions
+  monitor   - Watch for resolutions and emit signals
+  status    - Show system status
 
 Usage:
-  python run.py build
-  python run.py monitor
-  python run.py backtest
-  python run.py ingest
-  python run.py status
+  python -m topic.run build
+  python -m topic.run backtest
+  python -m topic.run monitor
 """
 
-import sys
 import logging
+import sys
+import time
 
-logging.basicConfig(
-  level=logging.INFO,
-  format="%(asctime)s - %(levelname)s - %(message)s"
-)
-
-
-def cmd_build():
-  """Build the event graph from historical resolved markets."""
-  import json
-  from pathlib import Path
-  from client import PolymarketClient
-  from graph import EventGraph, build_historical_edges, print_summary
-
-  print("\n" + "=" * 60)
-  print("BUILDING EVENT GRAPH FROM HISTORICAL DATA")
-  print("=" * 60)
-
-  # Fetch closed/resolved markets
-  client = PolymarketClient()
-  print("Fetching resolved markets from Polymarket...")
-  closed_markets = client.fetch_closed_markets(limit=100, max_pages=20)
-  print(f"Fetched {len(closed_markets)} resolved markets")
-
-  if len(closed_markets) < 10:
-    print("Not enough resolved markets to build graph.")
-    return
-
-  # Build edges from historical outcomes
-  edges, market_outcomes = build_historical_edges(closed_markets, min_similarity=0.75)
-
-  if not edges:
-    print("No related market pairs found.")
-    return
-
-  # Save to graph
-  graph = EventGraph()
-  graph.clear()  # Start fresh
-  graph.add_edges(edges)
-
-  # Save market outcomes for backtesting
-  outcomes_file = Path("data/market_outcomes.json")
-  outcomes_data = {mid: outcome.value for mid, outcome in market_outcomes.items()}
-  with open(outcomes_file, "w") as f:
-    json.dump(outcomes_data, f, indent=2)
-  print(f"Saved {len(outcomes_data)} market outcomes to {outcomes_file}")
-
-  print_summary(graph)
-
-
-def cmd_monitor():
-  """Monitor for trading signals in real-time."""
-  from signals import SignalMonitor
-
-  print("\n" + "=" * 60)
-  print("LIVE SIGNAL MONITOR")
-  print("=" * 60)
-  print("Press Ctrl+C to stop\n")
-
-  monitor = SignalMonitor()
-  monitor.run_forever(interval=60)
-
-
-def cmd_backtest():
-  """Run backtest on historical data."""
-  from backtest import BacktestEngine, print_results
-
-  print("\n" + "=" * 60)
-  print("RUNNING BACKTEST")
-  print("=" * 60)
-
-  engine = BacktestEngine()
-  result = engine.run()
-  print_results(result)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+logger = logging.getLogger(__name__)
 
 
 def cmd_ingest():
-  """Start continuous data ingestion."""
-  from ingestion import IngestionRunner
+    """Poll for new market resolutions."""
+    from .ingestion import ResolutionTracker
 
-  print("\n" + "=" * 60)
-  print("DATA INGESTION")
-  print("=" * 60)
-  print("Snapshot interval: 5 minutes")
-  print("Resolution check: 1 minute")
-  print("Press Ctrl+C to stop\n")
+    print("\n=== INGESTING RESOLUTIONS ===\n")
 
-  runner = IngestionRunner(
-    snapshot_interval=300,
-    resolution_interval=60,
-  )
-  runner.run_forever()
+    tracker = ResolutionTracker()
+    new = tracker.check_new()
+
+    if new:
+        print(f"\nFound {len(new)} new resolutions")
+    else:
+        print("No new resolutions")
+
+
+def cmd_build():
+    """Build similarity graph from resolved markets."""
+    from .config import MARKETS_PER_PAGE, MAX_PAGES, MIN_EMBEDDING_SIMILARITY
+    from .graph import build_embedding_graph, save_graph
+    from .utils.client import fetch_closed_markets
+
+    print("\n=== BUILDING SIMILARITY GRAPH ===\n")
+    print("Creates a graph of semantically similar market pairs.\n")
+
+    print("Fetching resolved markets...")
+    markets = fetch_closed_markets(limit=MARKETS_PER_PAGE, max_pages=MAX_PAGES)
+    print(f"Fetched {len(markets)} markets")
+
+    if len(markets) < 10:
+        print("Not enough markets to build graph.")
+        return
+
+    # Filter to clearly resolved markets
+    clear_markets = [m for m in markets if m.yes_price > 0.9 or m.yes_price < 0.1]
+    print(f"Clearly resolved: {len(clear_markets)} markets")
+
+    print(f"\nBuilding graph (min_similarity={MIN_EMBEDDING_SIMILARITY})...")
+    edges = build_embedding_graph(clear_markets)
+
+    if not edges:
+        print("No related market pairs found.")
+        return
+
+    # Save the graph
+    save_graph(edges, clear_markets)
+
+    print("\nGraph built:")
+    print(f"  Total edges: {len(edges)}")
+    print("  Saved to: data/event_graph.json")
+
+    # Show sample edges
+    print("\nSample edges:")
+    for edge in edges[:5]:
+        source = next((m for m in clear_markets if m.id == edge.from_market_id), None)
+        target = next((m for m in clear_markets if m.id == edge.to_market_id), None)
+        if source and target:
+            print(f"  sim={edge.similarity:.2f}")
+            print(f"    Source: {source.question[:55]}...")
+            print(f"    Target: {target.question[:55]}...")
+
+
+def cmd_monitor():
+    """Watch for resolutions and emit trading signals."""
+    from .graph import EventGraph
+    from .ingestion import ResolutionTracker
+    from .signals import SignalEngine
+
+    print("\n=== MONITORING FOR SIGNALS ===")
+    print("Press Ctrl+C to stop\n")
+
+    graph = EventGraph()
+    tracker = ResolutionTracker()
+    engine = SignalEngine(graph)
+
+    stats = graph.stats()
+    print(f"Graph: {stats['total_edges']} edges, {stats['unique_sources']} sources")
+    print(f"Resolutions tracked: {len(tracker.get_all())}")
+    print("\nPolling for new resolutions every 60s...\n")
+
+    try:
+        while True:
+            new_resolutions = tracker.check_new()
+
+            if new_resolutions:
+                engine.refresh_markets()
+                for res in new_resolutions:
+                    signals = engine.on_resolution(res.market_id, res.outcome)
+                    for sig in signals:
+                        print(f"\n[{sig.direction}] {sig.market_id[:20]}...")
+                        print(f"  {sig.current_price:.1%} -> {sig.expected_price:.1%}")
+
+            time.sleep(60)
+
+    except KeyboardInterrupt:
+        print("\nStopped.")
 
 
 def cmd_status():
-  """Show system status."""
-  import json
-  from pathlib import Path
-  from graph import EventGraph
-  from ingestion import ResolutionTracker, SNAPSHOTS_DIR
+    """Show system status."""
+    from pathlib import Path
 
-  print("\n" + "=" * 60)
-  print("SYSTEM STATUS")
-  print("=" * 60)
+    from .graph import EventGraph
+    from .ingestion import ResolutionTracker
 
-  # Graph
-  print("\n[Event Graph]")
-  graph = EventGraph()
-  stats = graph.stats()
-  print(f"  Total edges: {stats['total_edges']}")
-  print(f"  Valid edges: {stats['valid_edges']}")
-  print(f"  Leaders: {stats['unique_leaders']}")
-  print(f"  Followers: {stats['unique_followers']}")
+    print("\n=== SYSTEM STATUS ===\n")
 
-  # Resolutions
-  print("\n[Resolutions]")
-  tracker = ResolutionTracker()
-  resolutions = tracker.get_all()
-  print(f"  Tracked: {len(resolutions)}")
+    # Graph
+    graph = EventGraph()
+    stats = graph.stats()
+    print("[Graph]")
+    print(f"  Edges: {stats['total_edges']}")
+    print(f"  Sources: {stats['unique_sources']}")
 
-  # Snapshots
-  print("\n[Snapshots]")
-  if SNAPSHOTS_DIR.exists():
-    files = list(SNAPSHOTS_DIR.glob("snapshots_*.json"))
-    print(f"  Files: {len(files)}")
-  else:
-    print("  No snapshots yet")
+    # Resolutions
+    tracker = ResolutionTracker()
+    print("\n[Resolutions]")
+    print(f"  Tracked: {len(tracker.get_all())}")
 
-  # Signals
-  print("\n[Signals]")
-  signals_file = Path("data/signals.json")
-  if signals_file.exists():
-    with open(signals_file) as f:
-      signals = json.load(f)
-    print(f"  Total: {len(signals)}")
-  else:
-    print("  No signals yet")
+    # Signals
+    signals_file = Path("data/signals.json")
+    if signals_file.exists():
+        import json
+
+        with signals_file.open() as f:
+            signals = json.load(f)
+        print("\n[Signals]")
+        print(f"  Total: {len(signals)}")
+    else:
+        print("\n[Signals]")
+        print("  None yet")
+
+
+def cmd_backtest():
+    """Run backtest on historical data."""
+    from .backtest import run_backtest
+    from .config import BACKTEST_MAX_MARKETS, BACKTEST_VERBOSE, MIN_EMBEDDING_SIMILARITY
+
+    # Check for command line options
+    min_sim = MIN_EMBEDDING_SIMILARITY
+    for arg in sys.argv:
+        if arg.startswith("--min-sim="):
+            min_sim = float(arg.split("=")[1])
+
+    print("\n=== BACKTESTING ===\n")
+    print("Testing: do semantically similar markets resolve the same way?")
+    print(f"Min similarity: {min_sim}\n")
+
+    result = run_backtest(
+        min_similarity=min_sim,
+        max_markets=BACKTEST_MAX_MARKETS,
+        verbose=BACKTEST_VERBOSE,
+    )
+
+    print("\n" + result.summary())
+    print("\nInterpretation:")
+    print("  Win rate > 50% = similar markets tend to agree (strategy has edge)")
+    print("  Win rate ~ 50% = no predictive value (random)")
+    print("  Win rate < 50% = similar markets tend to disagree (inverse strategy)")
 
 
 def cmd_help():
-  """Show help message."""
-  print(__doc__)
+    print(__doc__)
 
 
 def main():
-  commands = {
-    "build": cmd_build,
-    "monitor": cmd_monitor,
-    "backtest": cmd_backtest,
-    "ingest": cmd_ingest,
-    "status": cmd_status,
-    "help": cmd_help,
-    "--help": cmd_help,
-    "-h": cmd_help,
-  }
+    commands = {
+        "ingest": cmd_ingest,
+        "build": cmd_build,
+        "monitor": cmd_monitor,
+        "backtest": cmd_backtest,
+        "status": cmd_status,
+        "help": cmd_help,
+        "--help": cmd_help,
+        "-h": cmd_help,
+    }
 
-  if len(sys.argv) < 2:
-    cmd_help()
-    sys.exit(1)
+    if len(sys.argv) < 2:
+        cmd_help()
+        sys.exit(1)
 
-  cmd = sys.argv[1].lower()
+    cmd = sys.argv[1].lower()
+    if cmd not in commands:
+        print(f"Unknown command: {cmd}")
+        cmd_help()
+        sys.exit(1)
 
-  if cmd not in commands:
-    print(f"Unknown command: {cmd}")
-    cmd_help()
-    sys.exit(1)
-
-  try:
-    commands[cmd]()
-  except KeyboardInterrupt:
-    print("\nStopped.")
-  except Exception as e:
-    logging.error(f"Error: {e}")
-    sys.exit(1)
+    try:
+        commands[cmd]()
+    except KeyboardInterrupt:
+        print("\nStopped.")
+    except Exception as e:
+        logger.error(f"Error: {e}")
+        raise
 
 
 if __name__ == "__main__":
-  main()
+    main()

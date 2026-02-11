@@ -1,296 +1,234 @@
 """
-Backtest Engine
+Backtesting
 
-Evaluates the quality of learned market relationships using historical data.
+Simulates trading signals on historical market data to evaluate strategy performance.
 
-Proper methodology:
-1. Split markets into train (70%) and test (30%) sets
-2. Build correlation patterns from training set only
-3. For each test market, predict outcome based on correlated training markets
-4. Compare predictions to actual test outcomes
+Tests whether semantically similar markets tend to resolve the same way
+(both YES or both NO).
 """
 
 import json
 import logging
-import random
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 
-from .deterministic_bootstrap import init_deterministic
-from .models import BacktestResult, Outcome
-from .graph import EventGraph
-
-# Initialize deterministic behavior
-init_deterministic(seed=42)
+from .config import BACKTEST_SAVE_RESULTS, MIN_EMBEDDING_SIMILARITY
+from .utils.client import fetch_closed_markets
+from .utils.embeddings import cluster_markets
+from .utils.models import Outcome
 
 logger = logging.getLogger(__name__)
 
-OUTCOMES_FILE = Path("data/market_outcomes.json")
+BACKTEST_RESULTS_FILE = Path("data/backtest_results.json")
 
 
 @dataclass
 class Trade:
-  """Simulated trade result."""
-  test_market_id: str
-  train_market_id: str
-  similarity: float
-  train_outcome: Outcome
-  predicted_outcome: Outcome
-  actual_outcome: Outcome
-  profitable: bool
+    """A simulated trade."""
+
+    source_id: str
+    target_id: str
+    direction: str  # BUY or SELL
+    entry_price: float
+    exit_price: float
+    similarity: float
+
+    @property
+    def pnl(self):
+        """Profit/loss in price units."""
+        if self.direction == "BUY":
+            return self.exit_price - self.entry_price
+        return self.entry_price - self.exit_price
+
+    @property
+    def won(self):
+        return self.pnl > 0
 
 
-class BacktestEngine:
-  """
-  Backtests correlation-based predictions with proper train/test split.
+@dataclass
+class BacktestResult:
+    """Results from a backtest run."""
 
-  Splits markets into train/test sets:
-  - Learns correlation patterns from training pairs
-  - Tests predictions on held-out markets
-  """
+    trades: list
+    total_markets: int
+    related_pairs: int
 
-  def __init__(self, graph=None):
-    self.graph = graph or EventGraph()
-    self.outcomes = self._load_outcomes()
+    @property
+    def total_trades(self):
+        return len(self.trades)
 
-  def _load_outcomes(self):
-    """Load historical market outcomes."""
-    if not OUTCOMES_FILE.exists():
-      logger.warning(f"No outcomes file found at {OUTCOMES_FILE}")
-      return {}
+    @property
+    def winning_trades(self):
+        return sum(1 for t in self.trades if t.won)
 
-    with open(OUTCOMES_FILE) as f:
-      data = json.load(f)
+    @property
+    def win_rate(self):
+        if not self.trades:
+            return 0.0
+        return self.winning_trades / len(self.trades)
 
-    return {mid: Outcome(val) for mid, val in data.items()}
+    @property
+    def total_pnl(self):
+        return sum(t.pnl for t in self.trades)
 
-  def run(self, test_fraction=0.3):
+    @property
+    def avg_pnl(self):
+        if not self.trades:
+            return 0.0
+        return self.total_pnl / len(self.trades)
+
+    def summary(self):
+        """Return summary string."""
+        lines = [
+            f"Markets analyzed: {self.total_markets}",
+            f"Related pairs found: {self.related_pairs}",
+            f"Trades simulated: {self.total_trades}",
+            f"Win rate: {self.win_rate:.1%}",
+            f"Total PnL: {self.total_pnl:+.2f}",
+            f"Avg PnL per trade: {self.avg_pnl:+.3f}",
+        ]
+        return "\n".join(lines)
+
+
+def run_backtest(min_similarity=None, max_markets=500, verbose=False):
     """
-    Run backtest with proper train/test split.
+    Run backtest on historical closed markets.
+
+    Tests whether semantically similar markets resolve the same way.
+    For each pair of similar markets, we check if they both resolved YES
+    or both resolved NO (agreement) vs opposite outcomes (disagreement).
+
+    A high agreement rate suggests the correlation-based trading strategy
+    has predictive value.
 
     Args:
-      test_fraction: Fraction of markets to hold out for testing.
+        min_similarity: Minimum similarity to consider markets related.
+        max_markets: Maximum number of markets to fetch.
+        verbose: If True, print example pairs for debugging.
 
     Returns:
-      BacktestResult with performance metrics.
+        BacktestResult with trades and statistics.
     """
-    edges = self.graph.get_valid()
+    if min_similarity is None:
+        min_similarity = MIN_EMBEDDING_SIMILARITY
 
-    if not edges:
-      logger.warning("No valid edges to backtest")
-      return self._empty_result()
+    logger.info("Fetching closed markets...")
+    markets = fetch_closed_markets(limit=100, max_pages=max_markets // 100)
+    logger.info(f"Fetched {len(markets)} closed markets")
 
-    if not self.outcomes:
-      logger.warning("No historical outcomes loaded - run 'python run.py build' first")
-      return self._empty_result()
+    if len(markets) < 10:
+        logger.warning("Not enough markets for backtest")
+        return BacktestResult(trades=[], total_markets=len(markets), related_pairs=0)
 
-    # Get all unique markets from edges
-    all_market_ids = set()
-    for e in edges:
-      all_market_ids.add(e.from_market_id)
-      all_market_ids.add(e.to_market_id)
+    # Filter to only clearly resolved markets (price > 0.9 or < 0.1)
+    clear_markets = [m for m in markets if m.yes_price > 0.9 or m.yes_price < 0.1]
+    logger.info(f"Clearly resolved markets: {len(clear_markets)} of {len(markets)}")
 
-    # Filter to markets with known outcomes
-    markets_with_outcomes = [m for m in all_market_ids if m in self.outcomes]
+    # Find related pairs
+    logger.info("Finding related market pairs...")
+    pairs = cluster_markets(clear_markets, min_similarity=min_similarity)
+    logger.info(f"Found {len(pairs)} related pairs")
 
-    if len(markets_with_outcomes) < 10:
-      logger.warning("Not enough markets with outcomes for train/test split")
-      return self._empty_result()
+    if verbose and pairs:
+        print("\nExample pairs:")
+        for market_a, market_b, sim in pairs[:5]:
+            outcome_a = "YES" if market_a.yes_price > 0.5 else "NO"
+            outcome_b = "YES" if market_b.yes_price > 0.5 else "NO"
+            agreed = "+" if outcome_a == outcome_b else "-"
+            print(f"  [{agreed}] sim={sim:.2f}")
+            print(f"      A: {market_a.question[:60]}... -> {outcome_a}")
+            print(f"      B: {market_b.question[:60]}... -> {outcome_b}")
 
-    # Split markets into train/test
-    random.seed(42)
-    random.shuffle(markets_with_outcomes)
-    split_idx = int(len(markets_with_outcomes) * (1 - test_fraction))
-    train_markets = set(markets_with_outcomes[:split_idx])
-    test_markets = set(markets_with_outcomes[split_idx:])
-
-    logger.info(f"Train markets: {len(train_markets)}, Test markets: {len(test_markets)}")
-
-    # Get edges where BOTH markets are in training set (learn correlation patterns)
-    train_edges = [
-      e for e in edges
-      if e.from_market_id in train_markets and e.to_market_id in train_markets
-    ]
-
-    # Build correlation lookup: for each market pair, did they resolve the same way?
-    correlations = {}
-    for e in train_edges:
-      out1 = self.outcomes.get(e.from_market_id)
-      out2 = self.outcomes.get(e.to_market_id)
-      if out1 and out2:
-        correlated = (out1 == out2)
-        key = (e.from_market_id, e.to_market_id)
-        correlations[key] = (correlated, e.similarity)
-
-    logger.info(f"Learned {len(correlations)} correlation patterns from training data")
-
-    # Find edges that connect train markets to test markets
-    test_edges = [
-      e for e in edges
-      if (e.from_market_id in train_markets and e.to_market_id in test_markets) or
-         (e.from_market_id in test_markets and e.to_market_id in train_markets)
-    ]
-
-    logger.info(f"Found {len(test_edges)} edges connecting train to test markets")
-
-    # Make predictions for test markets
+    # Test correlation hypothesis: do similar markets resolve the same way?
     trades = []
-    for edge in test_edges:
-      trade = self._make_prediction(edge, train_markets, test_markets, correlations)
-      if trade:
+    all_results = []
+
+    for market_a, market_b, similarity in pairs:
+        trade = _test_correlation(market_a, market_b, similarity)
         trades.append(trade)
 
-    return self._compute_results(trades)
+        # Record for saving
+        outcome_a = "YES" if market_a.yes_price > 0.5 else "NO"
+        outcome_b = "YES" if market_b.yes_price > 0.5 else "NO"
+        all_results.append(
+            {
+                "source_id": market_a.id,
+                "source_question": market_a.question,
+                "source_outcome": outcome_a,
+                "target_id": market_b.id,
+                "target_question": market_b.question,
+                "target_outcome": outcome_b,
+                "similarity": similarity,
+                "agreed": outcome_a == outcome_b,
+            }
+        )
 
-  def _make_prediction(self, edge, train_markets, test_markets, correlations):
+    logger.info(f"Tested {len(trades)} market pairs")
+
+    # Save results if enabled
+    if BACKTEST_SAVE_RESULTS and all_results:
+        _save_backtest_results(all_results, trades, len(clear_markets), min_similarity)
+
+    return BacktestResult(
+        trades=trades,
+        total_markets=len(clear_markets),
+        related_pairs=len(pairs),
+    )
+
+
+def _test_correlation(market_a, market_b, similarity):
     """
-    Predict test market outcome based on training data.
+    Test if two similar markets resolved the same way.
 
-    Core hypothesis: Semantically similar markets tend to resolve the same way.
-    We DON'T use edge deltas (which would leak test info) - only similarity.
+    We're testing the hypothesis: "semantically similar markets should
+    resolve with the same outcome (both YES or both NO)."
+
+    Returns a Trade where:
+    - direction = "BUY" (we bet they agree)
+    - entry_price = 0.5 (fair odds)
+    - exit_price = 1.0 if they agreed, 0.0 if they disagreed
+    - pnl = +0.5 if correct, -0.5 if wrong
     """
-    # Determine which is train and which is test
-    if edge.from_market_id in train_markets and edge.to_market_id in test_markets:
-      train_id = edge.from_market_id
-      test_id = edge.to_market_id
-    else:
-      train_id = edge.to_market_id
-      test_id = edge.from_market_id
+    outcome_a = Outcome.YES if market_a.yes_price > 0.5 else Outcome.NO
+    outcome_b = Outcome.YES if market_b.yes_price > 0.5 else Outcome.NO
 
-    train_outcome = self.outcomes.get(train_id)
-    actual_outcome = self.outcomes.get(test_id)
-
-    if not train_outcome or not actual_outcome:
-      return None
-
-    # Core hypothesis: similar markets resolve the same way
-    # (Don't use delta - it encodes actual outcomes and would leak info)
-    predicted = train_outcome
-
-    profitable = (predicted == actual_outcome)
+    # Did they resolve the same way?
+    agreed = outcome_a == outcome_b
 
     return Trade(
-      test_market_id=test_id,
-      train_market_id=train_id,
-      similarity=edge.similarity,
-      train_outcome=train_outcome,
-      predicted_outcome=predicted,
-      actual_outcome=actual_outcome,
-      profitable=profitable,
+        source_id=market_a.id,
+        target_id=market_b.id,
+        direction="BUY",  # We're betting on agreement
+        entry_price=0.5,  # Fair odds baseline
+        exit_price=1.0 if agreed else 0.0,
+        similarity=similarity,
     )
 
-  def _empty_result(self):
-    """Return empty backtest result."""
-    return BacktestResult(
-      total_signals=0,
-      profitable_signals=0,
-      total_pnl=0.0,
-      avg_pnl_per_signal=0.0,
-      hit_rate=0.0,
-      avg_decay_vs_lag=0.0,
-    )
 
-  def _compute_results(self, trades):
-    """Compute backtest metrics."""
-    if not trades:
-      return self._empty_result()
+def _save_backtest_results(all_results, trades, total_markets, min_similarity):
+    """Save backtest results to JSON file for inspection."""
+    BACKTEST_RESULTS_FILE.parent.mkdir(parents=True, exist_ok=True)
 
-    profitable = [t for t in trades if t.profitable]
-    hit_rate = len(profitable) / len(trades)
+    agreed_count = sum(1 for r in all_results if r["agreed"])
 
-    # Compute PnL (assume fixed bet size, win = +1, lose = -1)
-    total_pnl = len(profitable) - (len(trades) - len(profitable))
-    avg_pnl = total_pnl / len(trades)
+    data = {
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "config": {
+            "min_similarity": min_similarity,
+        },
+        "summary": {
+            "total_markets": total_markets,
+            "total_pairs_analyzed": len(all_results),
+            "agreed": agreed_count,
+            "disagreed": len(all_results) - agreed_count,
+            "agreement_rate": agreed_count / len(all_results) if all_results else 0,
+            "trades_executed": len(trades),
+        },
+        "pairs": all_results,
+    }
 
-    # Analyze by similarity bucket
-    buckets = [
-      (0.95, 1.0),
-      (0.90, 0.95),
-      (0.85, 0.90),
-      (0.80, 0.85),
-      (0.75, 0.80),
-    ]
+    with BACKTEST_RESULTS_FILE.open("w") as f:
+        json.dump(data, f, indent=2)
 
-    bucket_stats = []
-    for low, high in buckets:
-      bucket_trades = [t for t in trades if low <= t.similarity < high]
-      if bucket_trades:
-        bucket_correct = sum(1 for t in bucket_trades if t.profitable)
-        bucket_rate = bucket_correct / len(bucket_trades)
-        bucket_stats.append({
-          "range": f"{low:.0%}-{high:.0%}",
-          "count": len(bucket_trades),
-          "correct": bucket_correct,
-          "hit_rate": bucket_rate,
-        })
-
-    # Build trade details
-    details = []
-    for t in trades[:20]:
-      details.append({
-        "test_market": t.test_market_id,
-        "train_market": t.train_market_id,
-        "similarity": f"{t.similarity:.1%}",
-        "train_outcome": t.train_outcome.name,
-        "predicted": t.predicted_outcome.name,
-        "actual": t.actual_outcome.name,
-        "profitable": t.profitable,
-      })
-
-    result = BacktestResult(
-      total_signals=len(trades),
-      profitable_signals=len(profitable),
-      total_pnl=total_pnl / 100,  # Normalize for display
-      avg_pnl_per_signal=avg_pnl / 100,
-      hit_rate=hit_rate,
-      avg_decay_vs_lag=0.0,
-      signals=details,
-    )
-
-    # Store bucket stats for printing
-    result.bucket_stats = bucket_stats
-    return result
-
-
-def print_results(result):
-  """Print backtest results."""
-  print("\n" + "=" * 60)
-  print("BACKTEST RESULTS")
-  print("=" * 60)
-
-  if result.total_signals == 0:
-    print("\nNo trades to evaluate.")
-    return
-
-  print(f"\nTotal predictions: {result.total_signals}")
-  print(f"Correct: {result.profitable_signals}")
-  print(f"Hit rate: {result.hit_rate:.1%}")
-
-  # Baseline comparison
-  baseline = 0.5  # Random guessing
-  improvement = (result.hit_rate - baseline) / baseline * 100
-  print(f"\nBaseline (random): 50.0%")
-  print(f"Improvement: {improvement:+.1f}%")
-
-  # Analyze by similarity threshold
-  if hasattr(result, 'bucket_stats') and result.bucket_stats:
-    print("\n" + "-" * 60)
-    print("ACCURACY BY SIMILARITY THRESHOLD")
-    print("-" * 60)
-    print("(Does higher similarity = better predictions?)\n")
-    for bucket in result.bucket_stats:
-      bar_len = int(bucket['hit_rate'] * 40)
-      bar = "█" * bar_len + "░" * (40 - bar_len)
-      print(f"  {bucket['range']:>10}: {bar} {bucket['hit_rate']:5.1%} ({bucket['count']:>4} predictions)")
-
-  if result.signals:
-    print("\n" + "-" * 60)
-    print("SAMPLE PREDICTIONS")
-    print("-" * 60)
-
-    for t in result.signals[:10]:
-      status = "✓" if t["profitable"] else "✗"
-      print(f"\n[{status}] Test: {t['test_market'][:12]}...")
-      print(f"    Based on: {t['train_market'][:12]}... (sim: {t['similarity']})")
-      print(f"    Train resolved: {t['train_outcome']}")
-      print(f"    Predicted: {t['predicted']}, Actual: {t['actual']}")
+    logger.info(f"Saved backtest results to {BACKTEST_RESULTS_FILE}")

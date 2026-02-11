@@ -1,136 +1,87 @@
 """Tests for backtest module."""
 
-import json
-from pathlib import Path
-
-import pytest
-
-from src.topic.backtest import BacktestEngine, Trade
-from src.topic.models import Outcome
+from src.topic.backtest import BacktestResult, Trade
 
 
-@pytest.fixture
-def outcomes_file(tmp_path):
-  """Create temporary outcomes file."""
-  outcomes_path = tmp_path / "market_outcomes.json"
-  outcomes_data = {
-    "market1": True,
-    "market2": False,
-    "market3": True,
-    "market4": False,
-    "market5": True,
-  }
-  with open(outcomes_path, "w") as f:
-    json.dump(outcomes_data, f)
-  return outcomes_path
+def test_trade_pnl_buy():
+    """Test PnL calculation for BUY trades."""
+    trade = Trade(
+        source_id="source1",
+        target_id="target1",
+        direction="BUY",
+        entry_price=0.50,
+        exit_price=0.95,
+        similarity=0.85,
+    )
+
+    assert abs(trade.pnl - 0.45) < 1e-10
+    assert trade.won is True
 
 
-@pytest.fixture
-def mock_graph(monkeypatch):
-  """Mock EventGraph with test edges."""
-  from src.topic.graph import EventGraph
-  from src.topic.models import EventEdge, ConditionalDelta
+def test_trade_pnl_sell():
+    """Test PnL calculation for SELL trades."""
+    trade = Trade(
+        source_id="source1",
+        target_id="target1",
+        direction="SELL",
+        entry_price=0.50,
+        exit_price=0.05,
+        similarity=0.85,
+    )
 
-  class MockGraph:
-    def get_valid(self):
-      delta_yes = ConditionalDelta(
-        condition=Outcome.YES,
-        avg_delta=0.3,
-        median_delta=0.3,
-        std_delta=0.1,
-        avg_lag_seconds=3600,
-        median_lag_seconds=3600,
-        sample_count=1,
-      )
-      delta_no = ConditionalDelta(
-        condition=Outcome.NO,
-        avg_delta=-0.3,
-        median_delta=-0.3,
-        std_delta=0.1,
-        avg_lag_seconds=3600,
-        median_lag_seconds=3600,
-        sample_count=1,
-      )
-
-      return [
-        EventEdge(
-          from_market_id="market1",
-          to_market_id="market2",
-          similarity=0.9,
-          yes_delta=delta_yes,
-          no_delta=delta_no,
-          confidence=0.9,
-          last_updated=None,
-        ),
-        EventEdge(
-          from_market_id="market3",
-          to_market_id="market4",
-          similarity=0.85,
-          yes_delta=delta_yes,
-          no_delta=delta_no,
-          confidence=0.85,
-          last_updated=None,
-        ),
-      ]
-
-  return MockGraph()
+    assert abs(trade.pnl - 0.45) < 1e-10
+    assert trade.won is True
 
 
-def test_backtest_loads_outcomes(outcomes_file, monkeypatch):
-  """Test that backtest loads outcomes correctly."""
-  monkeypatch.setattr("src.topic.backtest.OUTCOMES_FILE", outcomes_file)
+def test_trade_loss():
+    """Test losing trade."""
+    trade = Trade(
+        source_id="source1",
+        target_id="target1",
+        direction="BUY",
+        entry_price=0.50,
+        exit_price=0.05,
+        similarity=0.85,
+    )
 
-  from src.topic.backtest import BacktestEngine
-
-  engine = BacktestEngine()
-
-  assert len(engine.outcomes) == 5
-  assert engine.outcomes["market1"] == Outcome.YES
-  assert engine.outcomes["market2"] == Outcome.NO
-
-
-def test_backtest_deterministic_split(outcomes_file, monkeypatch, mock_graph):
-  """Test that backtest produces same train/test split."""
-  monkeypatch.setattr("src.topic.backtest.OUTCOMES_FILE", outcomes_file)
-
-  from src.topic.backtest import BacktestEngine
-
-  engine = BacktestEngine(graph=mock_graph)
-
-  # Run twice
-  result1 = engine.run(test_fraction=0.3)
-  result2 = engine.run(test_fraction=0.3)
-
-  # Should have identical results
-  assert result1.total_signals == result2.total_signals
-  assert result1.hit_rate == result2.hit_rate
+    assert abs(trade.pnl - (-0.45)) < 1e-10
+    assert trade.won is False
 
 
-def test_backtest_empty_result():
-  """Test empty result when no edges."""
-  from src.topic.backtest import BacktestEngine
+def test_backtest_result_stats():
+    """Test BacktestResult statistics."""
+    trades = [
+        Trade("s1", "t1", "BUY", 0.5, 0.95, 0.8),  # win +0.45
+        Trade("s2", "t2", "BUY", 0.5, 0.05, 0.8),  # loss -0.45
+        Trade("s3", "t3", "SELL", 0.5, 0.05, 0.8),  # win +0.45
+    ]
 
-  engine = BacktestEngine()
-  result = engine._empty_result()
+    result = BacktestResult(
+        trades=trades,
+        total_markets=100,
+        related_pairs=50,
+    )
 
-  assert result.total_signals == 0
-  assert result.profitable_signals == 0
-  assert result.hit_rate == 0.0
+    assert result.total_trades == 3
+    assert result.winning_trades == 2
+    assert abs(result.win_rate - 0.6667) < 0.01
+    assert abs(result.total_pnl - 0.45) < 0.01
 
 
-def test_trade_creation():
-  """Test Trade dataclass creation."""
-  trade = Trade(
-    test_market_id="test123",
-    train_market_id="train456",
-    similarity=0.95,
-    train_outcome=Outcome.YES,
-    predicted_outcome=Outcome.YES,
-    actual_outcome=Outcome.NO,
-    profitable=False,
-  )
+def test_backtest_result_empty():
+    """Test BacktestResult with no trades."""
+    result = BacktestResult(trades=[], total_markets=10, related_pairs=0)
 
-  assert trade.test_market_id == "test123"
-  assert trade.train_market_id == "train456"
-  assert trade.similarity == 0.95
-  assert not trade.profitable
+    assert result.total_trades == 0
+    assert result.win_rate == 0.0
+    assert result.total_pnl == 0.0
+    assert result.avg_pnl == 0.0
+
+
+def test_backtest_result_summary():
+    """Test BacktestResult summary generation."""
+    result = BacktestResult(trades=[], total_markets=100, related_pairs=10)
+
+    summary = result.summary()
+    assert "Markets analyzed: 100" in summary
+    assert "Related pairs found: 10" in summary

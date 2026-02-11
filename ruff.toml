@@ -1,0 +1,52 @@
+# Ruff configuration for v0.5
+# https://docs.astral.sh/ruff/
+
+line-length = 100
+target-version = "py310"
+
+[lint]
+select = [
+    "E",      # pycodestyle errors
+    "W",      # pycodestyle warnings
+    "F",      # pyflakes
+    "I",      # isort
+    "N",      # pep8-naming
+    "UP",     # pyupgrade
+    "B",      # flake8-bugbear
+    "C4",     # flake8-comprehensions
+    "DTZ",    # flake8-datetimez
+    "T10",    # flake8-debugger
+    "EM",     # flake8-errmsg
+    "ICN",    # flake8-import-conventions
+    "PIE",    # flake8-pie
+    "PT",     # flake8-pytest-style
+    "Q",      # flake8-quotes
+    "RSE",    # flake8-raise
+    "RET",    # flake8-return
+    "SIM",    # flake8-simplify
+    "PTH",    # flake8-use-pathlib
+    "PL",     # pylint
+    "RUF",    # ruff-specific rules
+]
+
+ignore = [
+    "E501",   # line too long (handled by formatter)
+    "PLR0913", # too many arguments
+    "PLR2004", # magic value in comparison
+    "N803",   # argument name should be lowercase (conflicts with sklearn convention)
+    "N806",   # variable name should be lowercase (conflicts with sklearn convention)
+    "PLC0415", # import outside top-level (intentional for optional/lazy imports)
+    "RET504",  # unnecessary variable assignment before return (improves readability)
+]
+
+[lint.per-file-ignores]
+"tests/**/*.py" = [
+    "PLR2004",  # Magic values are fine in tests
+    "S101",     # Assert is fine in tests
+]
+
+[format]
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+line-ending = "auto"

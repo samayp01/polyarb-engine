@@ -13,11 +13,5 @@ COPY data/ ./data/
 # Install dependencies
 RUN uv sync --frozen
 
-# Set deterministic flags
-ENV OMP_NUM_THREADS=1
-ENV MKL_NUM_THREADS=1
-ENV OPENBLAS_NUM_THREADS=1
-ENV NUMEXPR_NUM_THREADS=1
-
 # Run application
-CMD ["uv", "run", "python", "-m", "src.topic.run"]
+CMD ["uv", "run", "python", "-m", "topic.run"]

@@ -28,18 +28,22 @@ jobs:
         run: |
           uv sync --all-extras
 
-      - name: Lint with ruff
+      - name: Lint and format check with ruff
         run: |
           uv run ruff check src/ tests/
-
-      - name: Format check with black
-        run: |
-          uv run black --check src/ tests/
+          uv run ruff format --check src/ tests/
 
       - name: Type check with mypy
         run: |
-          uv run mypy src/
+          uv run mypy src/ --ignore-missing-imports
 
-      - name: Run tests
+      - name: Run tests with coverage
         run: |
-          uv run pytest tests/ -v --cov=src --cov-report=term-missing
+          uv run pytest tests/ --cov=src/topic --cov-report=term-missing --cov-report=html
+
+      - name: Upload coverage reports
+        uses: codecov/codecov-action@v4
+        if: matrix.python-version == '3.12'
+        with:
+          files: ./htmlcov/index.html
+          fail_ci_if_error: false

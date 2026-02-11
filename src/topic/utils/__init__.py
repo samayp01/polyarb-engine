@@ -1,14 +1,18 @@
-"""Utilities for embeddings, HTTP, and vector indexing."""
+"""Utilities for embeddings and API client."""
 
-from .embeddings import EmbeddingModel, cluster_markets, sanitize_embeddings
-from .http import make_session, safe_get_json
-from .vector_index import VectorIndex
+from .client import Market, fetch_closed_markets, fetch_markets
+from .embeddings import cluster_markets, embed_texts
+from .models import EventEdge, MarketResolution, MarketSnapshot, Outcome, Signal
 
 __all__ = [
-  "EmbeddingModel",
-  "cluster_markets",
-  "sanitize_embeddings",
-  "make_session",
-  "safe_get_json",
-  "VectorIndex",
+    "EventEdge",
+    "Market",
+    "MarketResolution",
+    "MarketSnapshot",
+    "Outcome",
+    "Signal",
+    "cluster_markets",
+    "embed_texts",
+    "fetch_closed_markets",
+    "fetch_markets",
 ]

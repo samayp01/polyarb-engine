@@ -1,7 +1,5 @@
 """Tests for ingestion module."""
 
-
-
 from src.topic.utils.client import Market
 from src.topic.utils.models import Outcome
 
